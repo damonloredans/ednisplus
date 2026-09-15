@@ -20,10 +20,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import edesk_composer
 import fetchbox_bridge
 import gemini_client
 from edesk_reader import read_ticket
-from netsuite_reader import read_tracking_numbers
+from netsuite_reader import read_product_details, read_tracking_numbers
 from tracking_parser import detect_carrier
 
 # Fetchbox's repeating-shipment blocks (_1TRACKINGNUM_, _2TRACKINGNUM_, ...)
@@ -43,6 +44,7 @@ class Api:
         self._pick_result = None
         self._last_scripts_by_id = {}
         self._last_known_values = {}
+        self._last_ticket_url = None
         self._last_name = ""
 
     def _bind(self, window):
@@ -99,33 +101,61 @@ class Api:
     def switch_alternate(self, script_id):
         threading.Thread(target=self._run_switch, args=(script_id,), daemon=True).start()
 
+    def insert_into_edesk(self, draft_text):
+        threading.Thread(target=self._run_insert, args=(draft_text,), daemon=True).start()
+
     # --- workers ---------------------------------------------------------
 
     def _run_analyze(self):
+        """Reads the ticket first, then decides what NetSuite lookups (if
+        any) are actually relevant — same as a rep would: not every ticket
+        is about an order/shipment, so a missing order # is not an error,
+        it's just one less thing to look up before drafting a reply."""
         self._busy(True)
         try:
             self._status("Reading the ticket...")
             ticket = read_ticket(log=self._status, pick_page=self._pick_page)
-            if not ticket.get("order_query"):
-                self._status(
-                    "No order number found on this ticket — can't look up "
-                    "NetSuite tracking.",
-                    "error",
-                )
-                return
+            self._last_ticket_url = ticket.get("url")
 
-            self._status("Looking up tracking in NetSuite...")
-            tracking_numbers = read_tracking_numbers(ticket["order_query"], log=self._status)
-            shipments = [
-                {"tracking_number": num, "carrier": detect_carrier(num)}
-                for num in tracking_numbers
-            ]
+            shipments = []
+            if ticket.get("order_query"):
+                self._status("Order number found — looking up tracking in NetSuite...")
+                try:
+                    tracking_numbers = read_tracking_numbers(ticket["order_query"], log=self._status)
+                    shipments = [
+                        {"tracking_number": num, "carrier": detect_carrier(num)}
+                        for num in tracking_numbers
+                    ]
+                except Exception as e:
+                    # A NetSuite hiccup shouldn't block drafting a reply —
+                    # the ticket text + Fetchbox alone can still produce
+                    # something useful; just note tracking wasn't confirmed.
+                    self._status(f"Couldn't confirm NetSuite tracking ({e}) — drafting without it.")
+            else:
+                self._status("No order number on this ticket — drafting from the ticket text alone.")
+
+            product_details = ""
+            if ticket.get("ecom_number") or ticket.get("order_query"):
+                self._status("Looking up product/item details in NetSuite...")
+                try:
+                    product_details = read_product_details(
+                        order_query=ticket.get("order_query"),
+                        ecom_number=ticket.get("ecom_number"),
+                        log=self._status,
+                    )
+                except Exception as e:
+                    self._status(f"Couldn't look up product details ({e}) — drafting without them.")
+                if product_details:
+                    self._status(f"Got {len(product_details)} chars of product details from NetSuite.")
+                else:
+                    self._status("No product details came back from NetSuite for this item.")
 
             known_fields = {
                 "order_number": ticket.get("order_query"),
                 "ecom_number": ticket.get("ecom_number"),
                 "shipped": bool(shipments),
                 "shipments": shipments,
+                "product_details": product_details,
             }
 
             # Single package: fill the plain _TRACKINGNUM_/_CARRIER_ tokens.
@@ -158,6 +188,25 @@ class Api:
 
             self._push_result(result)
             self._status("Draft ready — review before sending. Nothing was sent.", "success")
+        except Exception as e:
+            self._status(str(e), "error")
+        finally:
+            self._busy(False)
+
+    def _run_insert(self, draft_text):
+        """Inserts whatever's currently in the draft textarea (the user may
+        have edited it) into eDesk's own reply box. Never sends — the user
+        reviews it in eDesk and clicks Send themselves."""
+        self._busy(True)
+        try:
+            if not self._last_ticket_url:
+                self._status("Analyze a ticket first.", "error")
+                return
+            inserted = edesk_composer.insert_draft(self._last_ticket_url, draft_text, log=self._status)
+            if inserted:
+                self._status("Inserted into eDesk — review it there, then Send yourself.", "success")
+            else:
+                self._status("Couldn't insert into eDesk — use Copy instead.", "error")
         except Exception as e:
             self._status(str(e), "error")
         finally:

@@ -139,7 +139,7 @@ def _read_tracking_field(so_page, log):
             tab = so_page.locator(sel).first
             if tab.count() > 0 or tab.is_visible(timeout=500):
                 tab.click()
-                so_page.wait_for_timeout(600)
+                so_page.wait_for_timeout(1200)
                 break
         except Exception:
             continue
@@ -176,6 +176,195 @@ def _read_tracking_field(so_page, log):
         if numbers:
             return numbers
     return []
+
+
+# How much of each NetSuite record's visible text to hand to Gemini. Product
+# fields (specs, thread size, part numbers, compatibility, ...) vary too much
+# per listing to parse into fixed fields, so this reads the raw page text
+# instead and lets Gemini pull out whatever's relevant, same "read broadly,
+# let the model narrow it down" approach as edesk_reader's ticket body.
+MAX_PRODUCT_DETAIL_CHARS = 4000
+
+
+def _open_ecom_and_parent(context, page, ecom_number: str, log):
+    """Searches for the raw ecom record number, opens the Ecom Record, then
+    opens the link under its PARENT field too (same two-hop pattern as
+    ednis/netsuite_bridge.py's open_ecom_record). Returns (ecom_page,
+    parent_page_or_None) — a missing/unreadable PARENT link isn't fatal,
+    since plenty of product detail can live on the Ecom Record itself."""
+    result = page.locator("text=/^Ecom Record:/").first
+    try:
+        result.wait_for(timeout=8000)
+    except Exception as e:
+        raise RuntimeError(f"No 'Ecom Record' result showed up for '{ecom_number}'.") from e
+
+    anchor = result.locator("xpath=ancestor-or-self::a[1]")
+    href = anchor.get_attribute("href")
+    if not href:
+        raise RuntimeError("Found the Ecom Record result but couldn't get its link.")
+    ecom_url = urljoin(page.url, href)
+
+    page.keyboard.press("Escape")
+
+    log("Opening the Ecom Record to read product details...")
+    ecom_page = open_background_tab(context, ecom_url)
+    ecom_page.wait_for_load_state("domcontentloaded")
+
+    parent_page = None
+    try:
+        label = ecom_page.get_by_text("PARENT", exact=False).first
+        parent_href = label.locator("xpath=following::a[1]").get_attribute("href", timeout=3000)
+        if parent_href:
+            log("Opening the PARENT record too...")
+            parent_page = open_background_tab(context, urljoin(ecom_page.url, parent_href))
+            parent_page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        parent_page = None
+
+    return ecom_page, parent_page
+
+
+def _page_text(page, limit=MAX_PRODUCT_DETAIL_CHARS) -> str:
+    """Reads the page's visible text, waiting past domcontentloaded first —
+    NetSuite record pages render fields like TECH INFO via JS afterwards, so
+    reading immediately on load can capture the page before they exist."""
+    try:
+        try:
+            page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass  # NetSuite sometimes polls in the background and never
+            # goes fully idle — the timeout below still gives fields a
+            # chance to render.
+        page.wait_for_timeout(1200)
+        return page.inner_text("body").strip()[:limit]
+    except Exception:
+        return ""
+
+
+# NOTE: like SHIPPING_SUBTAB_SELECTORS, best-effort and unverified live.
+ITEMS_SUBTAB_SELECTORS = [
+    "a:has-text('Items')",
+    "li:has-text('Items')",
+    "[id*='items' i]:has-text('Items')",
+]
+
+
+def _first_item_link(page):
+    """Finds the first line-item hyperlink in the Items subtab's sublist —
+    the ITEM column (e.g. 'B9NN17365B-OE'). Locates the sublist by its ITEM
+    column header, then reads the first data row's link, mirroring the
+    'find the label, read the value near it' approach used elsewhere."""
+    try:
+        header = page.get_by_text("ITEM", exact=True).first
+        row = header.locator("xpath=ancestor::table[1]//tr[td][1]")
+        href = row.locator("a").first.get_attribute("href", timeout=2000)
+        if href:
+            return urljoin(page.url, href)
+    except Exception:
+        pass
+    return None
+
+
+def _find_sales_order_or_cash_sale(context, page, order_query: str, log):
+    """Returns (kind, page) for whichever of Sales Order / Cash Sale shows up
+    in the current search results, opened in a new tab — or (None, None) if
+    neither does. Cash Sale is NetSuite's record for orders paid immediately
+    with no separate invoice step; checked as a fallback since not every
+    order has a Sales Order."""
+    for kind, pattern in (("Sales Order", "^Sales Order:"), ("Cash Sale", "^Cash Sale:")):
+        result = page.locator(f"text=/{pattern}/").first
+        try:
+            result.wait_for(timeout=4000)
+        except Exception:
+            continue
+        anchor = result.locator("xpath=ancestor-or-self::a[1]")
+        href = anchor.get_attribute("href")
+        if not href:
+            continue
+        url = urljoin(page.url, href)
+        page.keyboard.press("Escape")
+        log(f"Opening the {kind} to find the item...")
+        txn_page = open_background_tab(context, url)
+        txn_page.wait_for_load_state("domcontentloaded")
+        return kind, txn_page
+    return None, None
+
+
+def _read_item_detail_from_transaction(context, txn_page, log) -> str:
+    """On an opened Sales Order / Cash Sale, clicks into the Items subtab,
+    opens the first line item's Inventory Item record, and returns its
+    visible text — that's where specs/tech info actually live, not on the
+    transaction record itself (per the user's own NetSuite screenshots)."""
+    for sel in ITEMS_SUBTAB_SELECTORS:
+        try:
+            tab = txn_page.locator(sel).first
+            if tab.count() > 0:
+                tab.click()
+                txn_page.wait_for_timeout(1200)
+                break
+        except Exception:
+            continue
+
+    item_url = _first_item_link(txn_page)
+    if not item_url:
+        log("Couldn't find an item link on the Items subtab.")
+        return ""
+
+    log("Opening the item to read its specs...")
+    item_page = open_background_tab(context, item_url)
+    item_page.wait_for_load_state("domcontentloaded")
+    return _page_text(item_page)
+
+
+def read_product_details(order_query: str | None = None, ecom_number: str | None = None, log=print) -> str:
+    """Best-effort product/spec lookup, following the same priority a rep
+    would: the Ecom Record (+ its PARENT) first when there's an ecom number,
+    otherwise the Sales Order's line item, otherwise (no Sales Order tied to
+    this order) the Cash Sale's line item — the latter two by clicking
+    through to the actual Inventory Item record, since specs/tech info live
+    there, not on the transaction record itself. Raw page text, not parsed
+    fields — listings vary too much for fixed selectors, so Gemini pulls out
+    whatever's relevant (thread size, OEM part number, fitment, ...) itself.
+    Empty string if nothing could be found/read anywhere in the chain."""
+    p, browser = _connect()
+    try:
+        context, page = _get_netsuite_page(browser)
+
+        if ecom_number:
+            try:
+                _type_into_search(page, ecom_number, log)
+                ecom_page, parent_page = _open_ecom_and_parent(context, page, ecom_number, log)
+                parts = []
+                ecom_text = _page_text(ecom_page)
+                if ecom_text:
+                    parts.append(f"ECOM RECORD:\n{ecom_text}")
+                if parent_page is not None:
+                    parent_text = _page_text(parent_page)
+                    if parent_text:
+                        parts.append(f"PARENT RECORD:\n{parent_text}")
+                if parts:
+                    log("Read product details from the Ecom Record.")
+                    return "\n\n".join(parts)
+                log("Ecom Record had nothing readable — trying the Sales Order/Cash Sale.")
+            except Exception as e:
+                log(f"No Ecom Record found ({e}) — trying the Sales Order/Cash Sale instead.")
+
+        if order_query:
+            _type_into_search(page, order_query, log)
+            kind, txn_page = _find_sales_order_or_cash_sale(context, page, order_query, log)
+            if txn_page is not None:
+                item_text = _read_item_detail_from_transaction(context, txn_page, log)
+                if item_text:
+                    log(f"Read item specs via the {kind}.")
+                    return f"ITEM DETAIL (via {kind}):\n{item_text}"
+            else:
+                log("No Sales Order or Cash Sale found for this order either.")
+
+        return ""
+    finally:
+        # Do NOT call browser.close(): this is the user's real, already-
+        # running Chrome window, not one Playwright launched itself.
+        p.stop()
 
 
 def read_tracking_numbers(order_query: str, log=print) -> list[str]:

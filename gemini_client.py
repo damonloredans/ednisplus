@@ -8,7 +8,7 @@ import os
 
 import requests
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 )
@@ -27,9 +27,11 @@ RESPONSE_SCHEMA = {
         "placeholder_values": {
             "type": "ARRAY",
             "description": (
-                "Values for the chosen script's placeholder tokens that you can "
-                "confidently infer from the ticket text. Omit any token you're not "
-                "sure about rather than guessing — a human fills those in by hand."
+                "Values for as many of the chosen script's placeholder tokens as "
+                "you can confidently work out from the ticket text, known facts, "
+                "and product/item details. Make a genuine effort on every token — "
+                "only omit one you truly have nothing to go on for; a human fills "
+                "those remaining ones in by hand."
             ),
             "items": {
                 "type": "OBJECT",
@@ -60,7 +62,7 @@ RESPONSE_SCHEMA = {
 def _format_known_fields(known_fields: dict) -> str:
     lines = []
     for k, v in known_fields.items():
-        if v in (None, "", []):
+        if k == "product_details" or v in (None, "", []):
             continue
         if k == "shipments" and isinstance(v, list):
             for i, s in enumerate(v, start=1):
@@ -78,6 +80,17 @@ def _build_prompt(ticket: dict, known_fields: dict, scripts: list[dict]) -> str:
         for s in scripts
     )
     known_block = _format_known_fields(known_fields)
+    product_details = (known_fields.get("product_details") or "").strip()
+    product_block = (
+        f"\n\nPRODUCT / ITEM DETAILS (raw text pulled from the Ecom Record, Sales "
+        f"Order, or Cash Sale's line item in NetSuite — whatever the customer is "
+        f"asking about, like specs, dimensions, thread size, OEM part number, "
+        f"fitment, is probably buried in here. Read it and pull out the actual "
+        f"answer to fill into placeholders like _INFO_ — don't leave a spec "
+        f"placeholder empty just because the raw text is messy):\n{product_details}"
+        if product_details
+        else ""
+    )
 
     return f"""You are helping a customer support agent draft a reply. You are NOT
 sending anything — a human reviews and copies your draft before it goes
@@ -92,15 +105,19 @@ TICKET MESSAGE:
 KNOWN FACTS (ground truth — already looked up in NetSuite/eDesk, do not
 contradict these, and use them directly for any matching placeholder like
 _TRACKINGNUM_ or _CARRIER_):
-{known_block or '(none found)'}
+{known_block or '(none — this ticket may not be about a specific order/shipment at all; judge purely from the ticket text)'}
+{product_block}
 
 CANDIDATE REPLY TEMPLATES (pick exactly one by id as script_id):
 {scripts_block}
 
 Pick the template that best answers what the customer is actually asking.
-For its placeholder tokens (things like _CLAIMTYPE_, _DELSTATUS_, _PLATFORM_),
-fill in only what you can reasonably infer from the ticket text or the known
-facts above — leave anything uncertain out of placeholder_values entirely."""
+For its placeholder tokens (things like _CLAIMTYPE_, _DELSTATUS_, _PLATFORM_,
+_INFO_), fill in everything you can confidently work out from the ticket
+text, the known facts, or the product/item details above — the goal is a
+fully drafted reply, not a fill-in-the-blanks template, so make a genuine
+effort on every token before leaving one out. Only omit a token from
+placeholder_values when you truly have nothing to go on for it."""
 
 
 def draft_reply(ticket: dict, known_fields: dict, scripts: list[dict], log=print) -> dict:

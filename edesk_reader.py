@@ -112,8 +112,10 @@ def _resolve_edesk_page(context, pick_page):
 
 
 def read_ticket(log=print, pick_page=None) -> dict:
-    """Returns {subject, body_text, order_query, ecom_number} for the
-    resolved eDesk ticket tab. Deliberately excludes any tracking info."""
+    """Returns {subject, body_text, order_query, ecom_number, url} for the
+    resolved eDesk ticket tab. Deliberately excludes any tracking info. The
+    url lets a later, separate connection (edesk_composer.insert_draft) find
+    this exact same ticket tab again without re-prompting a ticket picker."""
     with sync_playwright() as p:
         try:
             browser = p.chromium.connect_over_cdp(CDP_URL)
@@ -137,4 +139,5 @@ def read_ticket(log=print, pick_page=None) -> dict:
             "body_text": body_text,
             "order_query": order_query,
             "ecom_number": ecom_number,
+            "url": page.url,
         }
