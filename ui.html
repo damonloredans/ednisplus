@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EDNIS Drafter</title>
+<style>
+  @font-face {
+    font-family: "Pixelify Sans";
+    src: url("assets/PixelifySans-Regular.ttf") format("truetype");
+    font-weight: 400 700;
+    font-display: swap;
+  }
+
+  :root {
+    --bg:          #1a1030;
+    --glow-a:      rgba(157, 92, 255, .08);
+    --glow-b:      rgba(0, 196, 204, .06);
+    --tile:        #3a2266;
+    --sage:        #b79bff;
+    --sage-hover:  #c7b0ff;
+    --on-sage:     #241546;
+    --mint:        #ece6f7;
+    --green:       #a78fd6;
+    --white:       #ffffff;
+    --well:        #100a20;
+    --well-line:   rgba(183, 155, 255, .22);
+    --ok:          #8fe0b0;
+    --err:         #f0a9ae;
+    --mono:        "Consolas", ui-monospace, "DejaVu Sans Mono", monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background:
+      radial-gradient(55% 38% at 12% 6%, var(--glow-a), transparent 70%),
+      radial-gradient(50% 38% at 90% 94%, var(--glow-b), transparent 70%),
+      var(--bg);
+    background-attachment: fixed;
+    color: var(--mint);
+    font-family: "Pixelify Sans", "Consolas", ui-monospace, monospace;
+    font-weight: 400;
+    font-size: 11px;
+    -webkit-user-select: none;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  #app { position: relative; width: 356px; padding: 0 11px 10px; }
+
+  .titlebar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 6px; padding: 9px 0 0; -webkit-app-region: drag;
+  }
+  .winbtns { display: flex; gap: 1px; -webkit-app-region: no-drag; }
+  .winbtns button {
+    appearance: none; border: 0; background: transparent; color: var(--green);
+    font-family: "Segoe UI Symbol", "Segoe UI", sans-serif; font-size: 13px;
+    cursor: pointer; padding: 1px 5px; line-height: 1; border-radius: 4px;
+  }
+  .winbtns button:hover { color: var(--mint); background: rgba(236, 230, 247, .08); }
+
+  h1 { font-size: 16px; font-weight: 500; color: var(--mint); letter-spacing: .5px; line-height: 1; }
+  .subtitle { font-family: var(--mono); color: var(--green); font-size: 10px; line-height: 1.3; margin: 4px 0 7px; }
+
+  .field-label { font-family: var(--mono); color: var(--green); font-size: 9.5px; line-height: 1.3; margin: 10px 0 4px; }
+
+  input[type="text"] {
+    font-family: var(--mono); font-size: 11px; width: 100%;
+    background: var(--well); color: var(--mint); border: 0;
+    box-shadow: inset 0 0 0 1px var(--well-line); border-radius: 6px;
+    padding: 6px 10px; outline: none; transition: box-shadow .12s ease;
+  }
+  input[type="text"]::placeholder { color: var(--green); }
+  input[type="text"]:focus { box-shadow: inset 0 0 0 2px rgba(183, 155, 255, .5); }
+
+  .btn {
+    appearance: none; font: inherit; font-weight: 500; font-size: 12px;
+    letter-spacing: 1px; text-transform: uppercase; width: 100%;
+    color: var(--on-sage); background: var(--sage); border: 0; border-radius: 9px;
+    padding: 7px 0; cursor: pointer; transition: background .12s ease, opacity .12s ease, transform .05s ease;
+  }
+  .btn:hover:not([disabled]) { background: var(--sage-hover); }
+  .btn:active { transform: translateY(1px); }
+  .btn[disabled] { opacity: .5; cursor: default; }
+  .btn-analyze { margin-top: 8px; }
+  .btn-ghost {
+    background: transparent; color: var(--green); box-shadow: inset 0 0 0 1px var(--well-line);
+  }
+  .btn-ghost:hover:not([disabled]) { background: rgba(183, 155, 255, .1); color: var(--mint); }
+
+  .status {
+    margin-top: 10px; border-radius: 5px; background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--well-line); color: var(--green);
+    padding: 6px 9px; font-family: var(--mono); font-size: 10px; line-height: 1.4;
+    min-height: 22px; white-space: pre-wrap; word-break: break-word;
+  }
+  .status.success { color: var(--ok); }
+  .status.error   { color: var(--err); }
+
+  .result { margin-top: 10px; display: none; }
+  .result.show { display: block; }
+
+  .result-label { font-family: var(--mono); color: var(--green); font-size: 9.5px; margin: 10px 0 4px; }
+  .summary-box {
+    background: var(--well); box-shadow: inset 0 0 0 1px var(--well-line);
+    border-radius: 6px; padding: 8px 10px; font-size: 10.5px; line-height: 1.45; color: var(--mint);
+  }
+
+  .picked-tag {
+    display: inline-block; font-family: var(--mono); font-size: 9px;
+    color: var(--on-sage); background: var(--sage); border-radius: 4px;
+    padding: 2px 6px; margin-bottom: 5px; letter-spacing: .3px;
+  }
+
+  textarea#draft {
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.5; width: 100%;
+    min-height: 130px; resize: vertical; background: var(--well); color: var(--mint);
+    border: 0; box-shadow: inset 0 0 0 1px var(--well-line); border-radius: 6px;
+    padding: 8px 10px; outline: none;
+  }
+  textarea#draft:focus { box-shadow: inset 0 0 0 2px rgba(183, 155, 255, .5); }
+
+  .action-row { display: flex; gap: 6px; margin-top: 6px; }
+  .action-row .btn { margin-top: 0; }
+
+  .copy-note {
+    font-family: var(--mono); font-size: 9px; color: var(--green); opacity: .8;
+    margin-top: 5px; text-align: center;
+  }
+
+  .alternates { margin-top: 4px; }
+  .alt-btn {
+    display: block; width: 100%; text-align: left; font: inherit; font-size: 10px;
+    background: var(--tile); color: var(--mint); border: 0; border-radius: 6px;
+    padding: 6px 9px; margin-bottom: 5px; cursor: pointer; transition: filter .12s ease;
+  }
+  .alt-btn:hover { filter: brightness(1.15); }
+  .alt-why { display: block; color: var(--green); font-size: 9px; margin-top: 2px; }
+
+  .footer {
+    font-family: var(--mono); text-align: center; color: var(--green);
+    font-size: 9px; letter-spacing: .5px; margin-top: 9px; opacity: .75;
+  }
+
+  .overlay {
+    position: fixed; inset: 0; background: rgba(10, 5, 20, .84);
+    display: none; align-items: center; justify-content: center; padding: 14px;
+  }
+  .overlay.show { display: flex; }
+  .picker {
+    background: var(--bg); box-shadow: 0 0 0 1px var(--well-line);
+    border-radius: 9px; padding: 13px; width: 100%;
+  }
+  .picker h2 { font-size: 11px; color: var(--mint); font-weight: 500; margin-bottom: 9px; }
+  .picker .pick {
+    display: block; width: 100%; text-align: left; font: inherit; font-size: 10.5px;
+    background: var(--tile); color: var(--mint); border: 0; border-radius: 6px;
+    padding: 7px 9px; margin-bottom: 6px; cursor: pointer; transition: filter .12s ease;
+  }
+  .picker .pick:hover { filter: brightness(1.12); }
+  .picker .cancel {
+    display: block; width: 100%; margin-top: 2px; background: transparent; color: var(--green);
+    border: 0; font: inherit; font-size: 10.5px; padding: 6px; cursor: pointer;
+  }
+  .picker .cancel:hover { color: var(--mint); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="titlebar">
+    <h1>EDNIS Drafter</h1>
+    <div class="winbtns">
+      <button id="minBtn" title="Minimize">&#x2013;</button>
+      <button id="closeBtn" title="Close">&#x2715;</button>
+    </div>
+  </div>
+
+  <div class="subtitle">Ticket open in eDesk? Draft a reply from Fetchbox — copy-only, nothing is sent.</div>
+
+  <div class="field-label">Sign draft as</div>
+  <input type="text" id="nameInput" placeholder="[Your Name]" autocomplete="off" />
+
+  <button class="btn btn-analyze" id="analyzeBtn">Analyze Ticket</button>
+
+  <div class="status" id="status">Ready.</div>
+
+  <div class="result" id="result">
+    <div class="result-label">Ticket summary</div>
+    <div class="summary-box" id="summaryBox"></div>
+
+    <div class="result-label">Draft reply — edit freely, nothing is sent automatically</div>
+    <div class="picked-tag" id="pickedTag"></div>
+    <textarea id="draft" spellcheck="false"></textarea>
+    <div class="action-row">
+      <button class="btn" id="copyBtn">Copy to clipboard</button>
+    </div>
+    <div class="copy-note" id="copyNote"></div>
+
+    <div class="result-label" id="altsLabel" style="display:none">Other possible matches</div>
+    <div class="alternates" id="alternates"></div>
+  </div>
+
+  <div class="footer">&copy; loredans 2026 — companion to EDNIS</div>
+
+  <div class="overlay" id="overlay">
+    <div class="picker">
+      <h2>Multiple tickets are open. Use which one?</h2>
+      <div id="pickList"></div>
+      <button class="cancel" id="pickCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const appEl = $("app");
+  const controls = [$("analyzeBtn"), $("copyBtn"), $("nameInput")];
+
+  function callApi(fn, ...args) {
+    if (window.pywebview && window.pywebview.api) window.pywebview.api[fn](...args);
+  }
+
+  // ---- sign-as name (persisted client-side, pushed to Python on change) ----
+  try {
+    const saved = localStorage.getItem("ednisplus-name") || "";
+    if (saved) { $("nameInput").value = saved; callApi("set_name", saved); }
+  } catch (e) {}
+  $("nameInput").addEventListener("input", (e) => {
+    const v = e.target.value;
+    try { localStorage.setItem("ednisplus-name", v); } catch (err) {}
+    callApi("set_name", v);
+  });
+
+  $("minBtn").addEventListener("click", () => callApi("minimize"));
+  $("closeBtn").addEventListener("click", () => callApi("close"));
+  $("analyzeBtn").addEventListener("click", () => callApi("analyze_ticket"));
+
+  $("copyBtn").addEventListener("click", () => {
+    const text = $("draft").value;
+    navigator.clipboard.writeText(text).then(() => {
+      $("copyNote").textContent = "Copied — nothing was sent. Paste it into eDesk yourself.";
+      setTimeout(() => { $("copyNote").textContent = ""; }, 2600);
+    });
+  });
+
+  $("pickCancel").addEventListener("click", () => {
+    $("overlay").classList.remove("show");
+    callApi("resolve_pick", null);
+  });
+
+  let fitTimer;
+  function fitWindow() {
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => {
+      const r = appEl.getBoundingClientRect();
+      callApi("fit", Math.ceil(r.width), Math.ceil(r.height));
+    }, 30);
+  }
+  function scheduleFit() { fitWindow(); setTimeout(fitWindow, 90); }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleFit);
+  window.addEventListener("load", scheduleFit);
+  $("draft").addEventListener("input", fitWindow);
+
+  window.app = {
+    setStatus(text, state) {
+      const el = $("status");
+      el.textContent = text;
+      el.className = "status" + (state === "success" || state === "error" ? " " + state : "");
+      fitWindow();
+    },
+    setBusy(busy) { controls.forEach(c => c.disabled = !!busy); },
+    showPicker(labels) {
+      const list = $("pickList");
+      list.innerHTML = "";
+      labels.forEach((label, i) => {
+        const b = document.createElement("button");
+        b.className = "pick";
+        b.textContent = label;
+        b.addEventListener("click", () => {
+          $("overlay").classList.remove("show");
+          callApi("resolve_pick", i);
+        });
+        list.appendChild(b);
+      });
+      $("overlay").classList.add("show");
+    },
+    showResult(summary, draft, pickedTitle, alternates) {
+      $("summaryBox").textContent = summary;
+      $("draft").value = draft;
+      $("pickedTag").textContent = pickedTitle;
+      $("copyNote").textContent = "";
+
+      const altsWrap = $("alternates");
+      altsWrap.innerHTML = "";
+      $("altsLabel").style.display = alternates && alternates.length ? "" : "none";
+      (alternates || []).forEach(alt => {
+        const b = document.createElement("button");
+        b.className = "alt-btn";
+        b.innerHTML = "";
+        const title = document.createElement("span");
+        title.textContent = alt.title;
+        b.appendChild(title);
+        if (alt.why) {
+          const why = document.createElement("span");
+          why.className = "alt-why";
+          why.textContent = alt.why;
+          b.appendChild(why);
+        }
+        b.addEventListener("click", () => callApi("switch_alternate", alt.id));
+        altsWrap.appendChild(b);
+      });
+
+      $("result").classList.add("show");
+      fitWindow();
+    },
+    setDraft(draft, pickedTitle) {
+      $("draft").value = draft;
+      $("pickedTag").textContent = pickedTitle;
+      $("copyNote").textContent = "";
+      fitWindow();
+    },
+  };
+</script>
+</body>
+</html>

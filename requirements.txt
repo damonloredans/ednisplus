@@ -1,0 +1,4 @@
+playwright
+pywebview
+requests
+python-dotenv
